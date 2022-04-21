@@ -36,6 +36,8 @@ declare global {
   }
 }
 
+const TYPE_BASIC_WORKER = "BASIC_WORKER"
+
 const SPAWN_CONFIGS = {
   basicWorker: [MOVE, MOVE, CARRY, WORK]
 };
@@ -44,7 +46,7 @@ const queueBasicWorkers = (count: number) => {
   count = Math.max(0, count);
   let n = 0;
   while (count-- > 0) {
-    Memory.spawnQueue.push({ buildConfig: SPAWN_CONFIGS.basicWorker, name: uuid(), role: "basicWorker" });
+    Memory.spawnQueue.push({ buildConfig: SPAWN_CONFIGS.basicWorker, name: uuid(), role: TYPE_BASIC_WORKER });
     n++;
   }
   console.log(`queued ${n} workers.`);
@@ -101,35 +103,57 @@ const maintainBasicWorkers = (room: Room) => {
   const allCreeps = creeps.length + Memory.spawnQueue.length;
   console.log(`all (pending / existing) creeps pop is ${allCreeps}.`);
   if (allCreeps < BASIC_WORKER_POP) {
-    const more = BASIC_WORKER_POP - creeps.length;
+    const more = BASIC_WORKER_POP - allCreeps;
     console.log(`(spawning) creeps pop smaller than target pop ${BASIC_WORKER_POP}. Queuing ${more}`);
     queueBasicWorkers(more);
   }
 };
 
 const commandIdleWorkers = (room: Room) => {
-  const idleCreeps = room.find(FIND_MY_CREEPS, {filter: ({memory: {role, working}, store}) => !working && role === 'basic-worker' && store.getFreeCapacity() > 0})
+  const idleCreeps = room.find(FIND_MY_CREEPS, {
+    filter: ({ memory: { role, working } }) => !working && role === TYPE_BASIC_WORKER
+  });
   for (const c of idleCreeps) {
-    goHarvestEnergy(room, c)
+    if (c.store.getFreeCapacity() > 0) {
+      harvestNearestEnergy(c);
+    } else {
+      transferEnergyToNearest(c)
+    }
   }
-}
+};
 
-const findNearestSource = (room: Room, position: RoomPosition) => {
 
-}
-
-const goHarvestEnergy = (room: Room, creep: Creep) => {
-  const source = creep.pos.findClosestByPath(FIND_SOURCES)
+const harvestNearestEnergy = (creep: Creep) => {
+  const source = creep.pos.findClosestByPath(FIND_SOURCES);
   if (!source) {
-    console.warn(`can't find any source to harvest. will continue to idle.`)
+    console.warn(`can't find any source to harvest. will continue to idle.`);
+    return;
+  }
+  let code = creep.harvest(source);
+  if (code === ERR_NOT_IN_RANGE) {
+    creep.moveTo(source);
+  } else if (code === ERR_NOT_FOUND) {
+    console.log(`failed to harvest because there's no extractor`);
+  } else if (code !== 0) {
+    console.log(`failed to harvest because code ${code}`);
+  }
+};
+
+const transferEnergyToNearest = (creep: Creep) => {
+  const nearest = creep.pos.findClosestByPath(FIND_MY_SPAWNS)
+  if (!nearest) {
+    console.log(`creep ${creep.name} could not find nearest spawn to return to. idling`)
     return
   }
-
-  if (creep.harvest(source) !== 0) {
-    console.log(`failed to harvest because code ${}`)
+  const code = creep.transfer(nearest, RESOURCE_ENERGY)
+  if (code === ERR_NOT_IN_RANGE) {
+    creep.moveTo(nearest)
+  } else if (code === ERR_FULL) {
+    console.log('Spawn is full. Could not dump more energy. idling.')
+  } else {
+    console.log(`dumping energy failed for some reason. code: ${code}. idling`)
   }
-  creep.moveTo(source)
-};
+}
 
 // When compiling TS to JS and bundling with rollup, the line numbers and file names in error messages change
 // This utility uses source maps to get the line numbers and file names of the original, TS source code
@@ -143,6 +167,8 @@ export const loop = ErrorMapper.wrapLoop(() => {
   maintainBasicWorkers(room);
 
   spawnFromQueue(room);
+
+  commandIdleWorkers(room);
 
   // Automatically delete memory of missing creeps
   for (const name in Memory.creeps) {
